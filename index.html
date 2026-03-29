@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Standing still competition</title>
+  <title>Standing Still Competition</title>
   <style>
     html, body {
       margin: 0;
@@ -19,28 +19,18 @@
       top: 12px;
       left: 12px;
       z-index: 20;
-      background: rgba(255,255,255,0.9);
+      background: rgba(255,255,255,0.92);
       border: 1px solid rgba(0,0,0,0.12);
       border-radius: 14px;
       padding: 12px 14px;
-      max-width: 320px;
+      max-width: 340px;
       line-height: 1.35;
       backdrop-filter: blur(8px);
       box-shadow: 0 6px 20px rgba(0,0,0,0.08);
     }
 
-    #overlay h1 {
-      font-size: 16px;
-      margin: 0 0 8px 0;
-    }
-
-    #overlay p {
-      margin: 6px 0;
-      font-size: 13px;
-    }
-
     #scoreboard {
-      margin-top: 10px;
+      margin-top: 4px;
       font-size: 13px;
     }
 
@@ -53,11 +43,13 @@
       display: flex;
       gap: 10px;
       align-items: center;
-      background: rgba(255,255,255,0.92);
+      background: rgba(255,255,255,0.94);
       border: 1px solid rgba(0,0,0,0.12);
       border-radius: 999px;
       padding: 10px 14px;
       box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+      flex-wrap: wrap;
+      justify-content: center;
     }
 
     button {
@@ -74,20 +66,32 @@
       background: #ececec;
       color: #111;
     }
+
+    select {
+      border-radius: 999px;
+      padding: 10px 12px;
+      border: 1px solid rgba(0,0,0,0.12);
+      background: white;
+      font-size: 14px;
+    }
   </style>
 </head>
 <body>
   <div id="overlay">
-     <div id="scoreboard">
+    <div id="scoreboard">
       <div><strong>Stability:</strong> <span id="stabilityValue">0</span>/100</div>
       <div><strong>Best:</strong> <span id="bestValue">0</span>/100</div>
       <div><strong>Elapsed:</strong> <span id="timeValue">0.0</span>s</div>
+      <div><strong>Sound:</strong> <span id="soundLabel">Rainstick</span></div>
+      <div style="margin-top:6px; opacity:0.75;">
+        In VR: use left/right controller trigger on the floating sound panel
+      </div>
     </div>
   </div>
 
   <div id="startPanel">
     <label for="soundMode" style="font-size:14px;">Sound:</label>
-    <select id="soundMode" style="border-radius:999px;padding:10px 12px;border:1px solid rgba(0,0,0,0.12);background:white;">
+    <select id="soundMode">
       <option value="rainstick">Rainstick</option>
       <option value="maraca">Wooden Maraca</option>
       <option value="sand">Sand Falling</option>
@@ -120,8 +124,14 @@
     let traceIndex = 0;
     const maxPoints = 3000;
 
-    let soundOrb;
     let clock;
+    let raycaster;
+
+    let vrPanel;
+    let vrPrevButton;
+    let vrNextButton;
+    let vrSoundText;
+    const tempMatrix = new THREE.Matrix4();
 
     const calibration = {
       yaw: 0,
@@ -144,22 +154,31 @@
       sessionStarted: false,
       centeredX: 0,
       centeredZ: 0,
-      trailRadius: 0.055,
       time: 0,
-      lastTimestamp: 0,
       audioReady: false,
+      panelVisible: true,
+    };
+
+    const soundModes = ['rainstick', 'maraca', 'sand', 'ocean', 'sine'];
+
+    const soundLabels = {
+      rainstick: 'Rainstick',
+      maraca: 'Wooden Maraca',
+      sand: 'Sand Falling',
+      ocean: 'Ocean Rustle',
+      sine: 'Sine Wave'
     };
 
     const ui = {
       stabilityValue: document.getElementById('stabilityValue'),
       bestValue: document.getElementById('bestValue'),
       timeValue: document.getElementById('timeValue'),
+      soundLabel: document.getElementById('soundLabel'),
       calibrateBtn: document.getElementById('calibrateBtn'),
       resetBtn: document.getElementById('resetBtn'),
       soundMode: document.getElementById('soundMode'),
     };
 
-    // Rainstick-like Web Audio feedback
     let audioContext = null;
     let noiseNode = null;
     let noiseGain = null;
@@ -168,7 +187,8 @@
     let modGain = null;
     let sineOsc = null;
     let sineGain = null;
-    let currentSoundMode = 'rainstick';
+
+    let currentSoundMode = ui.soundMode.value;
 
     init();
     animate();
@@ -188,6 +208,7 @@
       document.body.appendChild(VRButton.createButton(renderer));
 
       clock = new THREE.Clock();
+      raycaster = new THREE.Raycaster();
 
       const hemi = new THREE.HemisphereLight(0xffffff, 0xdedede, 1.6);
       hemi.position.set(0, 1, 0);
@@ -210,23 +231,16 @@
 
       const ring = new THREE.Mesh(
         new THREE.RingGeometry(0.35, 0.42, 64),
-        new THREE.MeshBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.08, side: THREE.DoubleSide })
+        new THREE.MeshBasicMaterial({
+          color: 0x111111,
+          transparent: true,
+          opacity: 0.08,
+          side: THREE.DoubleSide
+        })
       );
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.002;
       room.add(ring);
-
-      soundOrb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.08, 32, 32),
-        new THREE.MeshStandardMaterial({
-          color: 0x111111,
-          emissive: 0x222222,
-          roughness: 0.4,
-          metalness: 0.0,
-        })
-      );
-      soundOrb.position.set(0, 1.55, -1.7);
-      room.add(soundOrb);
 
       feedbackGroup = new THREE.Group();
       camera.add(feedbackGroup);
@@ -235,17 +249,17 @@
 
       createSpirographLine();
       createFrameGuide();
+      createVRSoundPanel();
 
       ui.calibrateBtn.addEventListener('click', calibrateForward);
       ui.resetBtn.addEventListener('click', resetTrace);
       ui.soundMode.addEventListener('change', () => {
-        currentSoundMode = ui.soundMode.value;
+        setSoundMode(ui.soundMode.value);
       });
 
       renderer.xr.addEventListener('sessionstart', () => {
         state.sessionStarted = true;
         state.elapsed = 0;
-        state.lastTimestamp = performance.now();
         resetTrace();
         calibrateForward();
         setupAudio();
@@ -256,8 +270,17 @@
         stopAudio();
       });
 
+      const controller1 = renderer.xr.getController(0);
+      const controller2 = renderer.xr.getController(1);
+      controller1.addEventListener('selectstart', onVRSelect);
+      controller2.addEventListener('selectstart', onVRSelect);
+      scene.add(controller1);
+      scene.add(controller2);
+
       window.addEventListener('resize', onWindowResize);
       window.addEventListener('click', setupAudio, { once: true });
+
+      updateUI();
     }
 
     function createSpirographLine() {
@@ -279,10 +302,170 @@
     function createFrameGuide() {
       const guide = new THREE.Mesh(
         new THREE.RingGeometry(0.28, 0.285, 96),
-        new THREE.MeshBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.12, side: THREE.DoubleSide })
+        new THREE.MeshBasicMaterial({
+          color: 0x111111,
+          transparent: true,
+          opacity: 0.12,
+          side: THREE.DoubleSide
+        })
       );
       guide.position.set(0, 0, 0);
       feedbackGroup.add(guide);
+    }
+
+    function makeTextSprite(text, width = 512, height = 128, fontSize = 42) {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      roundRect(ctx, 0, 0, width, height, 28);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(0,0,0,0.14)';
+      ctx.lineWidth = 4;
+      roundRect(ctx, 2, 2, width - 4, height - 4, 26);
+      ctx.stroke();
+
+      ctx.fillStyle = '#111111';
+      ctx.font = `${fontSize}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, width / 2, height / 2);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+
+      const material = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true
+      });
+
+      const sprite = new THREE.Sprite(material);
+      sprite.scale.set(0.36, 0.09, 1);
+      sprite.userData.canvas = canvas;
+      sprite.userData.ctx = ctx;
+      sprite.userData.texture = texture;
+      return sprite;
+    }
+
+    function updateTextSprite(sprite, text, fontSize = 42) {
+      const canvas = sprite.userData.canvas;
+      const ctx = sprite.userData.ctx;
+      const texture = sprite.userData.texture;
+      const width = canvas.width;
+      const height = canvas.height;
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      roundRect(ctx, 0, 0, width, height, 28);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(0,0,0,0.14)';
+      ctx.lineWidth = 4;
+      roundRect(ctx, 2, 2, width - 4, height - 4, 26);
+      ctx.stroke();
+
+      ctx.fillStyle = '#111111';
+      ctx.font = `${fontSize}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, width / 2, height / 2);
+
+      texture.needsUpdate = true;
+    }
+
+    function roundRect(ctx, x, y, width, height, radius) {
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + width - radius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+      ctx.lineTo(x + width, y + height - radius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      ctx.lineTo(x + radius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+    }
+
+    function createVRSoundPanel() {
+      vrPanel = new THREE.Group();
+      camera.add(vrPanel);
+      vrPanel.position.set(0, -0.28, -0.9);
+
+      const bg = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.72, 0.18),
+        new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.92
+        })
+      );
+      vrPanel.add(bg);
+
+      vrPrevButton = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.12, 0.1),
+        new THREE.MeshBasicMaterial({ color: 0xeaeaea })
+      );
+      vrPrevButton.position.set(-0.23, 0, 0.001);
+      vrPrevButton.userData.action = 'prevSound';
+      vrPanel.add(vrPrevButton);
+
+      vrNextButton = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.12, 0.1),
+        new THREE.MeshBasicMaterial({ color: 0xeaeaea })
+      );
+      vrNextButton.position.set(0.23, 0, 0.001);
+      vrNextButton.userData.action = 'nextSound';
+      vrPanel.add(vrNextButton);
+
+      const prevText = makeTextSprite('◀', 256, 128, 64);
+      prevText.position.set(-0.23, 0, 0.01);
+      prevText.scale.set(0.1, 0.05, 1);
+      vrPanel.add(prevText);
+
+      const nextText = makeTextSprite('▶', 256, 128, 64);
+      nextText.position.set(0.23, 0, 0.01);
+      nextText.scale.set(0.1, 0.05, 1);
+      vrPanel.add(nextText);
+
+      vrSoundText = makeTextSprite(soundLabels[currentSoundMode], 1024, 160, 44);
+      vrSoundText.position.set(0, 0, 0.01);
+      vrSoundText.scale.set(0.34, 0.06, 1);
+      vrPanel.add(vrSoundText);
+    }
+
+    function onVRSelect(event) {
+      const controller = event.target;
+
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+      const intersects = raycaster.intersectObjects([vrPrevButton, vrNextButton], false);
+      if (intersects.length === 0) return;
+
+      const action = intersects[0].object.userData.action;
+      if (action === 'prevSound') cycleSound(-1);
+      if (action === 'nextSound') cycleSound(1);
+    }
+
+    function cycleSound(direction) {
+      const currentIndex = soundModes.indexOf(currentSoundMode);
+      let nextIndex = currentIndex + direction;
+      if (nextIndex < 0) nextIndex = soundModes.length - 1;
+      if (nextIndex >= soundModes.length) nextIndex = 0;
+      setSoundMode(soundModes[nextIndex]);
+    }
+
+    function setSoundMode(mode) {
+      currentSoundMode = mode;
+      ui.soundMode.value = mode;
+      ui.soundLabel.textContent = soundLabels[mode];
+      if (vrSoundText) updateTextSprite(vrSoundText, soundLabels[mode], 44);
     }
 
     function resetTrace() {
@@ -326,6 +509,11 @@
       return current + alpha * (target - current);
     }
 
+    function smoothstep(edge0, edge1, x) {
+      const t = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
+      return t * t * (3 - 2 * t);
+    }
+
     function updateGame(dt) {
       if (!calibration.hasReference) return;
 
@@ -363,30 +551,33 @@
       const rawCombinedError = rawSwayMagnitude + yawPenalty;
 
       const normalized = THREE.MathUtils.clamp(combinedError / 0.12, 0, 1);
-      const audioNormalized = THREE.MathUtils.clamp(rawCombinedError / 0.08, 0, 1);
+
+      // quiet zone when almost still, then ramp up strongly
+      const audioGate = smoothstep(0.02, 0.09, rawCombinedError);
+      const audioNormalized = Math.pow(audioGate, 1.25);
+
       const score = Math.round((1 - normalized) * 100);
       state.score = score;
       state.bestScore = Math.max(state.bestScore, score);
       state.elapsed += dt;
 
-      updateSpirograph(normalized, dt);
-      updateOrb(normalized);
+      updateSpirograph(normalized);
       updateAudio(audioNormalized);
       updateUI();
     }
 
-    function updateSpirograph(noiseAmount, dt) {
+    function updateSpirograph(noiseAmount) {
       const visualGainRot = 0.7;
       const visualGainPos = 0.5;
 
-      const x = filtered.roll * visualGainRot + filtered.x * visualGainPos;
+      // flipped horizontal mapping so head right = trace right
+      const x = (-filtered.roll * visualGainRot) + (filtered.x * visualGainPos);
       const y = filtered.pitch * visualGainRot + filtered.z * visualGainPos;
       const z = 0;
 
       addTracePoint(x, y, z);
 
-      const opacity = 0.5 + (1 - noiseAmount) * 0.35;
-      traceLine.material.opacity = opacity;
+      traceLine.material.opacity = 0.45 + (1 - noiseAmount) * 0.35;
     }
 
     function addTracePoint(x, y, z) {
@@ -407,21 +598,16 @@
       traceGeometry.attributes.position.needsUpdate = true;
     }
 
-    function updateOrb(noiseAmount) {
-      const s = 1 + (1 - noiseAmount) * 0.18;
-      soundOrb.scale.setScalar(s);
-      soundOrb.material.emissiveIntensity = 0.25 + (1 - noiseAmount) * 0.8;
-      soundOrb.position.y = 1.55 + Math.sin(performance.now() * 0.0015) * 0.02 * (1 - noiseAmount);
-    }
-
     function setupAudio() {
       if (state.audioReady) return;
+
       try {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
         const bufferSize = audioContext.sampleRate * 2;
         const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
         const data = buffer.getChannelData(0);
+
         for (let i = 0; i < bufferSize; i++) {
           data[i] = Math.random() * 2 - 1;
         }
@@ -472,77 +658,83 @@
       }
     }
 
-    function updateAudio(noiseAmount) {
+    function updateAudio(amount) {
       if (!state.audioReady || !audioContext) return;
       if (audioContext.state === 'suspended') audioContext.resume();
 
-      const movement = THREE.MathUtils.clamp(noiseAmount, 0, 1);
-      const grain = movement * movement;
+      const movement = THREE.MathUtils.clamp(amount, 0, 1);
+
+      // silent when almost still
+      if (movement < 0.03) {
+        noiseGain.gain.value = 0;
+        sineGain.gain.value = 0;
+        modGain.gain.value = 0;
+        return;
+      }
+
+      // stronger rise after the quiet zone
+      const density = Math.pow(movement, 1.5);
 
       noiseGain.gain.value = 0.0;
       sineGain.gain.value = 0.0;
       modGain.gain.value = 0.0;
 
       if (currentSoundMode === 'sine') {
-        sineOsc.frequency.value = 180 + movement * 420;
-        sineGain.gain.value = movement * 0.05;
+        sineOsc.frequency.value = 180 + density * 500;
+        sineGain.gain.value = density * 0.06;
         return;
       }
 
       if (currentSoundMode === 'rainstick') {
         filterNode.type = 'bandpass';
-        filterNode.frequency.value = 900 + grain * 2600;
-        filterNode.Q.value = 0.8 + grain * 3.0;
-        noiseGain.gain.value = grain * 0.045;
-        modOsc.frequency.value = 6 + grain * 18;
-        modGain.gain.value = grain * 0.01;
+        filterNode.frequency.value = 900 + density * 2800;
+        filterNode.Q.value = 0.7 + density * 3.5;
+        noiseGain.gain.value = density * 0.05;
+        modOsc.frequency.value = 4 + density * 26;
+        modGain.gain.value = density * 0.016;
         return;
       }
 
       if (currentSoundMode === 'maraca') {
         filterNode.type = 'highpass';
-        filterNode.frequency.value = 1800 + grain * 2600;
-        filterNode.Q.value = 0.7 + grain * 1.2;
-        noiseGain.gain.value = grain * 0.035;
-        modOsc.frequency.value = 10 + grain * 26;
-        modGain.gain.value = grain * 0.018;
+        filterNode.frequency.value = 1600 + density * 3000;
+        filterNode.Q.value = 0.6 + density * 1.6;
+        noiseGain.gain.value = density * 0.04;
+        modOsc.frequency.value = 8 + density * 32;
+        modGain.gain.value = density * 0.022;
         return;
       }
 
       if (currentSoundMode === 'sand') {
         filterNode.type = 'lowpass';
-        filterNode.frequency.value = 700 + grain * 900;
-        filterNode.Q.value = 0.4 + grain * 0.8;
-        noiseGain.gain.value = grain * 0.055;
-        modOsc.frequency.value = 3 + grain * 8;
-        modGain.gain.value = grain * 0.006;
+        filterNode.frequency.value = 550 + density * 1100;
+        filterNode.Q.value = 0.3 + density * 0.9;
+        noiseGain.gain.value = density * 0.06;
+        modOsc.frequency.value = 2 + density * 10;
+        modGain.gain.value = density * 0.007;
         return;
       }
 
       if (currentSoundMode === 'ocean') {
         filterNode.type = 'bandpass';
-        filterNode.frequency.value = 350 + grain * 700;
-        filterNode.Q.value = 0.3 + grain * 0.7;
-        noiseGain.gain.value = grain * 0.07;
-        modOsc.frequency.value = 0.6 + grain * 2.5;
-        modGain.gain.value = grain * 0.02;
+        filterNode.frequency.value = 280 + density * 900;
+        filterNode.Q.value = 0.25 + density * 0.9;
+        noiseGain.gain.value = density * 0.075;
+        modOsc.frequency.value = 0.5 + density * 3.5;
+        modGain.gain.value = density * 0.024;
       }
     }
 
     function stopAudio() {
-      try {
-        if (noiseNode) noiseNode.stop();
-      } catch (e) {}
-      try {
-        if (modOsc) modOsc.stop();
-      } catch (e) {}
-      try {
-        if (sineOsc) sineOsc.stop();
-      } catch (e) {}
+      try { if (noiseNode) noiseNode.stop(); } catch (e) {}
+      try { if (modOsc) modOsc.stop(); } catch (e) {}
+      try { if (sineOsc) sineOsc.stop(); } catch (e) {}
+
       if (audioContext) {
         audioContext.close();
         audioContext = null;
       }
+
       noiseNode = null;
       noiseGain = null;
       filterNode = null;
@@ -557,6 +749,7 @@
       ui.stabilityValue.textContent = String(state.score);
       ui.bestValue.textContent = String(state.bestScore);
       ui.timeValue.textContent = state.elapsed.toFixed(1);
+      ui.soundLabel.textContent = soundLabels[currentSoundMode];
     }
 
     function onWindowResize() {
