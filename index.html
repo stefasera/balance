@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WebXR Stillness Spirograph</title>
+  <title>Standing still competition</title>
   <style>
     html, body {
       margin: 0;
@@ -78,10 +78,7 @@
 </head>
 <body>
   <div id="overlay">
-    <h1>Stillness Game – Spirograph Feedback</h1>
-    <p>Goal: stand as still as possible while facing forward.</p>
-    <p>In VR, the line stays elegant when you are stable and becomes messy when you sway.</p>
-    <div id="scoreboard">
+     <div id="scoreboard">
       <div><strong>Stability:</strong> <span id="stabilityValue">0</span>/100</div>
       <div><strong>Best:</strong> <span id="bestValue">0</span>/100</div>
       <div><strong>Elapsed:</strong> <span id="timeValue">0.0</span>s</div>
@@ -89,6 +86,14 @@
   </div>
 
   <div id="startPanel">
+    <label for="soundMode" style="font-size:14px;">Sound:</label>
+    <select id="soundMode" style="border-radius:999px;padding:10px 12px;border:1px solid rgba(0,0,0,0.12);background:white;">
+      <option value="rainstick">Rainstick</option>
+      <option value="maraca">Wooden Maraca</option>
+      <option value="sand">Sand Falling</option>
+      <option value="ocean">Ocean Rustle</option>
+      <option value="sine">Sine Wave</option>
+    </select>
     <button id="calibrateBtn" class="secondary">Calibrate Forward</button>
     <button id="resetBtn" class="secondary">Reset Trace</button>
   </div>
@@ -151,13 +156,19 @@
       timeValue: document.getElementById('timeValue'),
       calibrateBtn: document.getElementById('calibrateBtn'),
       resetBtn: document.getElementById('resetBtn'),
+      soundMode: document.getElementById('soundMode'),
     };
 
-    // Optional Web Audio feedback
+    // Rainstick-like Web Audio feedback
     let audioContext = null;
-    let oscillator = null;
-    let gainNode = null;
+    let noiseNode = null;
+    let noiseGain = null;
     let filterNode = null;
+    let modOsc = null;
+    let modGain = null;
+    let sineOsc = null;
+    let sineGain = null;
+    let currentSoundMode = 'rainstick';
 
     init();
     animate();
@@ -227,6 +238,9 @@
 
       ui.calibrateBtn.addEventListener('click', calibrateForward);
       ui.resetBtn.addEventListener('click', resetTrace);
+      ui.soundMode.addEventListener('change', () => {
+        currentSoundMode = ui.soundMode.value;
+      });
 
       renderer.xr.addEventListener('sessionstart', () => {
         state.sessionStarted = true;
@@ -308,7 +322,7 @@
       return diff;
     }
 
-    function lowPass(current, target, alpha = 0.08) {
+    function lowPass(current, target, alpha = 0.35) {
       return current + alpha * (target - current);
     }
 
@@ -330,6 +344,13 @@
       filtered.x = lowPass(filtered.x, dx);
       filtered.z = lowPass(filtered.z, dz);
 
+      const rawSwayMagnitude = Math.sqrt(
+        pitchError * pitchError * 0.9 +
+        rollError * rollError * 0.9 +
+        dx * dx * 1.8 +
+        dz * dz * 1.8
+      );
+
       const swayMagnitude = Math.sqrt(
         filtered.pitch * filtered.pitch * 0.9 +
         filtered.roll * filtered.roll * 0.9 +
@@ -339,46 +360,32 @@
 
       const yawPenalty = Math.abs(yawError) * 0.7;
       const combinedError = swayMagnitude + yawPenalty;
+      const rawCombinedError = rawSwayMagnitude + yawPenalty;
 
       const normalized = THREE.MathUtils.clamp(combinedError / 0.12, 0, 1);
+      const audioNormalized = THREE.MathUtils.clamp(rawCombinedError / 0.08, 0, 1);
       const score = Math.round((1 - normalized) * 100);
       state.score = score;
       state.bestScore = Math.max(state.bestScore, score);
       state.elapsed += dt;
-      state.time += dt * (0.8 + normalized * 2.2);
 
       updateSpirograph(normalized, dt);
       updateOrb(normalized);
-      updateAudio(normalized);
+      updateAudio(audioNormalized);
       updateUI();
     }
 
     function updateSpirograph(noiseAmount, dt) {
-      const t = state.time;
+      const visualGainRot = 0.7;
+      const visualGainPos = 0.5;
 
-      const baseR = state.trailRadius;
-      const innerR = 0.018 + noiseAmount * 0.022;
-      const movementGain = 0.18;
-      const wobble = 0.004 + noiseAmount * 0.012;
-
-      const x =
-        Math.cos(t * 1.7) * baseR +
-        Math.cos(t * 5.3) * innerR +
-        filtered.roll * movementGain +
-        filtered.x * 0.12 +
-        Math.sin(t * 11.0) * wobble * noiseAmount;
-
-      const y =
-        Math.sin(t * 1.7) * baseR +
-        Math.sin(t * 5.3) * innerR +
-        filtered.pitch * movementGain +
-        filtered.z * 0.12 +
-        Math.cos(t * 9.0) * wobble * noiseAmount;
-
+      const x = filtered.roll * visualGainRot + filtered.x * visualGainPos;
+      const y = filtered.pitch * visualGainRot + filtered.z * visualGainPos;
       const z = 0;
+
       addTracePoint(x, y, z);
 
-      const opacity = 0.45 + (1 - noiseAmount) * 0.45;
+      const opacity = 0.5 + (1 - noiseAmount) * 0.35;
       traceLine.material.opacity = opacity;
     }
 
@@ -411,22 +418,53 @@
       if (state.audioReady) return;
       try {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        oscillator = audioContext.createOscillator();
-        gainNode = audioContext.createGain();
+
+        const bufferSize = audioContext.sampleRate * 2;
+        const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = Math.random() * 2 - 1;
+        }
+
+        noiseNode = audioContext.createBufferSource();
+        noiseNode.buffer = buffer;
+        noiseNode.loop = true;
+
         filterNode = audioContext.createBiquadFilter();
+        filterNode.type = 'bandpass';
+        filterNode.frequency.value = 1800;
+        filterNode.Q.value = 1.2;
 
-        oscillator.type = 'sine';
-        oscillator.frequency.value = 220;
+        noiseGain = audioContext.createGain();
+        noiseGain.gain.value = 0.0;
 
-        filterNode.type = 'lowpass';
-        filterNode.frequency.value = 1200;
+        modOsc = audioContext.createOscillator();
+        modOsc.type = 'sine';
+        modOsc.frequency.value = 8;
 
-        gainNode.gain.value = 0.02;
+        modGain = audioContext.createGain();
+        modGain.gain.value = 0.0;
 
-        oscillator.connect(filterNode);
-        filterNode.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-        oscillator.start();
+        sineOsc = audioContext.createOscillator();
+        sineOsc.type = 'sine';
+        sineOsc.frequency.value = 220;
+
+        sineGain = audioContext.createGain();
+        sineGain.gain.value = 0.0;
+
+        modOsc.connect(modGain);
+        modGain.connect(noiseGain.gain);
+
+        noiseNode.connect(filterNode);
+        filterNode.connect(noiseGain);
+        noiseGain.connect(audioContext.destination);
+
+        sineOsc.connect(sineGain);
+        sineGain.connect(audioContext.destination);
+
+        noiseNode.start();
+        modOsc.start();
+        sineOsc.start();
 
         state.audioReady = true;
       } catch (err) {
@@ -438,20 +476,80 @@
       if (!state.audioReady || !audioContext) return;
       if (audioContext.state === 'suspended') audioContext.resume();
 
-      const clarity = 1 - noiseAmount;
-      oscillator.frequency.value = 140 + clarity * 220;
-      filterNode.frequency.value = 350 + clarity * 2850;
-      gainNode.gain.value = 0.006 + clarity * 0.05;
+      const movement = THREE.MathUtils.clamp(noiseAmount, 0, 1);
+      const grain = movement * movement;
+
+      noiseGain.gain.value = 0.0;
+      sineGain.gain.value = 0.0;
+      modGain.gain.value = 0.0;
+
+      if (currentSoundMode === 'sine') {
+        sineOsc.frequency.value = 180 + movement * 420;
+        sineGain.gain.value = movement * 0.05;
+        return;
+      }
+
+      if (currentSoundMode === 'rainstick') {
+        filterNode.type = 'bandpass';
+        filterNode.frequency.value = 900 + grain * 2600;
+        filterNode.Q.value = 0.8 + grain * 3.0;
+        noiseGain.gain.value = grain * 0.045;
+        modOsc.frequency.value = 6 + grain * 18;
+        modGain.gain.value = grain * 0.01;
+        return;
+      }
+
+      if (currentSoundMode === 'maraca') {
+        filterNode.type = 'highpass';
+        filterNode.frequency.value = 1800 + grain * 2600;
+        filterNode.Q.value = 0.7 + grain * 1.2;
+        noiseGain.gain.value = grain * 0.035;
+        modOsc.frequency.value = 10 + grain * 26;
+        modGain.gain.value = grain * 0.018;
+        return;
+      }
+
+      if (currentSoundMode === 'sand') {
+        filterNode.type = 'lowpass';
+        filterNode.frequency.value = 700 + grain * 900;
+        filterNode.Q.value = 0.4 + grain * 0.8;
+        noiseGain.gain.value = grain * 0.055;
+        modOsc.frequency.value = 3 + grain * 8;
+        modGain.gain.value = grain * 0.006;
+        return;
+      }
+
+      if (currentSoundMode === 'ocean') {
+        filterNode.type = 'bandpass';
+        filterNode.frequency.value = 350 + grain * 700;
+        filterNode.Q.value = 0.3 + grain * 0.7;
+        noiseGain.gain.value = grain * 0.07;
+        modOsc.frequency.value = 0.6 + grain * 2.5;
+        modGain.gain.value = grain * 0.02;
+      }
     }
 
     function stopAudio() {
+      try {
+        if (noiseNode) noiseNode.stop();
+      } catch (e) {}
+      try {
+        if (modOsc) modOsc.stop();
+      } catch (e) {}
+      try {
+        if (sineOsc) sineOsc.stop();
+      } catch (e) {}
       if (audioContext) {
         audioContext.close();
         audioContext = null;
       }
-      oscillator = null;
-      gainNode = null;
+      noiseNode = null;
+      noiseGain = null;
       filterNode = null;
+      modOsc = null;
+      modGain = null;
+      sineOsc = null;
+      sineGain = null;
       state.audioReady = false;
     }
 
